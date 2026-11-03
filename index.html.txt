@@ -1,0 +1,205 @@
+import { useCallback, useEffect, useState } from 'react';
+import { motion } from 'framer-motion';
+import { Link } from 'react-router-dom';
+import { Search } from 'lucide-react';
+import { base44 } from '@/api/base44Client';
+import { useAuth } from '@/lib/AuthContext';
+import { toVideoViews } from '@/lib/videoMedia';
+import CuratorRow from '@/components/CuratorRow';
+import CurationModal from '@/components/CurationModal';
+import SchoolDomainForm from '@/components/SchoolDomainForm';
+import { cn } from '@/lib/utils';
+
+const PAGE_SIZE = 15;
+const FILTERS = [
+  { key: 'all', label: 'All' },
+  { key: 'under_review', label: 'Under Review' },
+  { key: 'approved', label: 'Approved' },
+  { key: 'delivered', label: 'Delivered' },
+];
+
+export default function Curation() {
+  const { user } = useAuth();
+  const isCurator = user?.role === 'admin';
+
+  const [query, setQuery] = useState('');
+  const [debounced, setDebounced] = useState('');
+  const [status, setStatus] = useState('all');
+  const [videos, setVideos] = useState([]);
+  const [cursor, setCursor] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [selected, setSelected] = useState(null);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setDebounced(query.trim()), 350);
+    return () => clearTimeout(timer);
+  }, [query]);
+
+  const load = useCallback(
+    async (nextCursor = null) => {
+      if (!isCurator) return;
+
+      const clauses = [];
+      if (status !== 'all') clauses.push({ status });
+      if (debounced) {
+        clauses.push({
+          $or: [
+            { client_name: { $regex: debounced, $options: 'i' } },
+            { client_email: { $regex: debounced, $options: 'i' } },
+            { title: { $regex: debounced, $options: 'i' } },
+          ],
+        });
+      }
+      const filter = clauses.length === 0 ? {} : clauses.length === 1 ? clauses[0] : { $and: clauses };
+
+      const page = await base44.entities.VideoDeposit.filter(filter, {
+        sort: '-created_date',
+        limit: PAGE_SIZE,
+        ...(nextCursor ? { cursor: nextCursor } : {}),
+      });
+      const views = await toVideoViews(page.items);
+      setVideos((prev) => (nextCursor ? [...prev, ...views] : views));
+      setCursor(page.has_more ? page.next_cursor : null);
+    },
+    [debounced, isCurator, status]
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    load()
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [load]);
+
+  const handleUpdated = (updated) => {
+    setVideos((prev) => prev.map((item) => (item.id === updated.id ? { ...item, ...updated } : item)));
+    setSelected((prev) => (prev && prev.id === updated.id ? { ...prev, ...updated } : prev));
+  };
+
+  if (!isCurator) {
+    return (
+      <div className="py-24 text-center">
+        <p className="text-[10px] uppercase tracking-[0.32em] text-gold/70">Restricted</p>
+        <h1 className="mt-5 font-display text-4xl font-light text-foreground">
+          This desk is reserved for curators
+        </h1>
+        <p className="mx-auto mt-4 max-w-sm text-[13px] leading-relaxed text-muted-foreground/70">
+          Your deposits and their notes live in your own vault.
+        </p>
+        <Link
+          to="/"
+          className="mt-8 inline-flex rounded-full border border-gold/35 bg-gold/[0.06] px-6 py-2.5 text-[10px] uppercase tracking-[0.24em] text-gold transition-colors hover:bg-gold/[0.12]"
+        >
+          Back to vault
+        </Link>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-12">
+      <motion.header
+        initial={{ opacity: 0, y: 14 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.7, ease: [0.22, 1, 0.36, 1] }}
+      >
+        <p className="flex items-center gap-3 text-[10px] uppercase tracking-[0.32em] text-gold/80">
+          <span className="h-px w-8 bg-gold/50" />
+          Curation desk
+        </p>
+        <h1 className="mt-5 font-display text-[42px] font-light leading-[1.05] tracking-tight text-foreground md:text-[56px]">
+          Every deposit, in review
+        </h1>
+        <p className="mt-4 max-w-lg text-[13px] leading-relaxed text-muted-foreground/75">
+          Screen each film, set its status, and leave a note only its client will read.
+        </p>
+      </motion.header>
+
+      <SchoolDomainForm />
+
+      <div className="flex flex-col gap-5 border-b border-white/[0.06] pb-5 md:flex-row md:items-center md:justify-between">
+        <div className="flex items-center gap-2.5 border-b border-white/10 pb-2 md:w-72 md:border-b-0 md:pb-0">
+          <Search className="h-3.5 w-3.5 text-muted-foreground/50" strokeWidth={1.5} />
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Search client name or email"
+            className="w-full bg-transparent text-[12px] text-foreground/85 placeholder:text-muted-foreground/40 focus:outline-none"
+          />
+        </div>
+
+        <div className="no-scrollbar flex gap-1 overflow-x-auto">
+          {FILTERS.map((filter) => (
+            <button
+              key={filter.key}
+              type="button"
+              onClick={() => setStatus(filter.key)}
+              className={cn(
+                'whitespace-nowrap rounded-full px-4 py-2 text-[10px] uppercase tracking-[0.18em] transition-all duration-300',
+                status === filter.key
+                  ? 'bg-gold/10 text-gold ring-1 ring-inset ring-gold/30'
+                  : 'text-muted-foreground/60 hover:text-foreground'
+              )}
+            >
+              {filter.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <section>
+        <div className="mb-1 flex items-center justify-between px-2 text-[9px] uppercase tracking-[0.24em] text-muted-foreground/35">
+          <span>Film</span>
+          <span>{videos.length} shown</span>
+        </div>
+
+        {loading ? (
+          <div className="space-y-2 pt-3">
+            {[0, 1, 2, 3].map((index) => (
+              <div key={index} className="h-24 animate-pulse rounded-lg bg-white/[0.02]" />
+            ))}
+          </div>
+        ) : videos.length === 0 ? (
+          <p className="py-20 text-center text-[11px] uppercase tracking-[0.22em] text-muted-foreground/40">
+            Nothing matches this filter
+          </p>
+        ) : (
+          <div>
+            {videos.map((video) => (
+              <CuratorRow key={video.id} video={video} onOpen={() => setSelected(video)} />
+            ))}
+          </div>
+        )}
+
+        {cursor && (
+          <div className="mt-10 text-center">
+            <button
+              type="button"
+              disabled={loadingMore}
+              onClick={async () => {
+                setLoadingMore(true);
+                try {
+                  await load(cursor);
+                } finally {
+                  setLoadingMore(false);
+                }
+              }}
+              className="rounded-full border border-white/10 px-6 py-2.5 text-[10px] uppercase tracking-[0.24em] text-muted-foreground/70 transition-colors hover:border-gold/35 hover:text-gold disabled:opacity-50"
+            >
+              {loadingMore ? 'Loading…' : 'Load more'}
+            </button>
+          </div>
+        )}
+      </section>
+
+      <CurationModal video={selected} onClose={() => setSelected(null)} onUpdated={handleUpdated} />
+    </div>
+  );
+}
